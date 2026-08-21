@@ -60,85 +60,226 @@ import Layout from "../layouts/Layout.astro";
         </div>
 
         <div class="relative">
-          <div id="price-chart" class="card-deep rounded-3xl overflow-hidden w-full" style="height: 420px;"></div>
+          <div id="chart-wrap" class="card-deep rounded-3xl overflow-hidden w-full relative" style="height: 420px;">
+            <!-- Full-height regime heatmap wash, sits BEHIND the transparent chart canvas -->
+            <div id="regime-heatmap-bg" class="absolute inset-0 z-0" style="filter: blur(16px); transform: scale(1.04); transition: opacity 0.4s ease;"></div>
+            <div id="price-chart" class="absolute inset-0 z-10"></div>
+          </div>
           <div
             id="chart-tooltip"
-            class="hidden absolute z-10 pointer-events-none rounded-lg bg-[#12482a] px-3 py-2 text-xs text-white shadow-lg"
+            class="hidden absolute z-20 pointer-events-none rounded-lg bg-[#12482a] px-3 py-2 text-xs text-white shadow-lg"
           ></div>
+        </div>
+
+        <div class="flex flex-wrap gap-4 mt-4 text-xs text-white/50">
+          <span class="flex items-center gap-2"><span class="w-3 h-3 rounded-sm" style="background:#3f8f5c"></span>Trend Calm</span>
+          <span class="flex items-center gap-2"><span class="w-3 h-3 rounded-sm" style="background:#e8c15a"></span>Trend Volatile</span>
+          <span class="flex items-center gap-2"><span class="w-3 h-3 rounded-sm" style="background:#4a7fa8"></span>Range Calm</span>
+          <span class="flex items-center gap-2"><span class="w-3 h-3 rounded-sm" style="background:#d97b3f"></span>Range Volatile</span>
+          <span class="flex items-center gap-2"><span class="w-3 h-3 rounded-sm" style="background:#c0392b"></span>Breakout</span>
+          <span class="flex items-center gap-2"><span class="w-3 h-3 rounded-full border border-white/40"></span>DC Event</span>
         </div>
       </div>
     </section>
 
     <script>
       import { createChart, ColorType } from "lightweight-charts";
-      import { getLatestRegimes } from "../lib/api";
 
+      type RegimeLabel = "TREND_CALM" | "TREND_VOLATILE" | "RANGE_CALM" | "RANGE_VOLATILE" | "BREAKOUT";
+      interface RegimePoint { time: string; regime_label: RegimeLabel; confidence: number; }
+      interface DcEvent { time: string; event_type: "UP" | "DOWN"; }
+      interface Bar { time: number; value: number; }
+
+      const REGIME_COLORS: Record<RegimeLabel, string> = {
+        TREND_CALM: "#3f8f5c",
+        TREND_VOLATILE: "#e8c15a",
+        RANGE_CALM: "#4a7fa8",
+        RANGE_VOLATILE: "#d97b3f",
+        BREAKOUT: "#c0392b",
+      };
+      const REGIME_LABELS = Object.keys(REGIME_COLORS) as RegimeLabel[];
+      const FALLBACK_COLOR = "#666666";
+
+      const chartWrap = document.getElementById("chart-wrap")!;
       const container = document.getElementById("price-chart")!;
+      const bgEl = document.getElementById("regime-heatmap-bg")!;
       const tooltip = document.getElementById("chart-tooltip")!;
 
       const chart = createChart(container, {
         layout: {
           background: { type: ColorType.Solid, color: "transparent" },
-          textColor: "rgba(255,255,255,0.6)",
+          textColor: "rgba(255,255,255,0.75)",
         },
         grid: {
-          vertLines: { color: "rgba(255,255,255,0.06)" },
-          horzLines: { color: "rgba(255,255,255,0.06)" },
+          vertLines: { visible: false },
+          horzLines: { color: "rgba(255,255,255,0.08)" },
         },
         crosshair: {
-          vertLine: {
-            visible: true,
-            labelVisible: true,
-            color: "rgba(232,193,90,0.4)",
-            width: 1,
-            style: 0,
-          },
+          vertLine: { visible: true, labelVisible: true, color: "rgba(255,255,255,0.35)", width: 1, style: 0 },
           horzLine: { visible: false, labelVisible: false },
         },
-        timeScale: {
-          borderVisible: false,
-          timeVisible: true,
-          secondsVisible: false,
-        },
+        timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
         rightPriceScale: {
           borderVisible: false,
           visible: true,
-          textColor: "rgba(255,255,255,0.85)",
+          textColor: "rgba(255,255,255,0.9)",
           scaleMargins: { top: 0.15, bottom: 0.15 },
         },
         autoSize: true,
       });
 
       const seriesOptions = {
-        color: "#e8c15a",
+        color: "#ffffff",
         lineWidth: 2,
-        crosshairMarkerVisible: false,
+        crosshairMarkerVisible: true,
+        crosshairMarkerRadius: 3,
+        crosshairMarkerBorderColor: "#ffffff",
+        crosshairMarkerBackgroundColor: "#0b2e18",
         priceLineVisible: false,
       };
 
       let priceSeries: any;
       if (typeof (chart as any).addLineSeries === "function") {
-        // lightweight-charts v3/v4 API
         priceSeries = (chart as any).addLineSeries(seriesOptions);
       } else {
-        // lightweight-charts v5 API
         const { LineSeries } = await import("lightweight-charts");
         priceSeries = (chart as any).addSeries(LineSeries, seriesOptions);
       }
 
       container.style.cursor = "crosshair";
 
-      // TODO: swap for real bars from the API once /bars exists.
-      const now = Math.floor(Date.now() / 1000);
-      let base = 1.085;
-      const barsPerDay = 96; // M15 = 96 bars/day, matches the M15 badge
-      const placeholder = Array.from({ length: barsPerDay * 5 }, (_, i) => {
-        const t = now - (barsPerDay * 5 - i) * 15 * 60;
-        base += (Math.random() - 0.5) * 0.0004;
-        const value = base + Math.sin(i / 40) * 0.002;
-        return { time: t, value };
-      });
-      priceSeries.setData(placeholder);
+      const activeSymbols = { EURUSD: "EUR/USD", GBPUSD: "GBP/USD", USDJPY: "USD/JPY" } as const;
+      let activeSymbol: keyof typeof activeSymbols = "EURUSD";
+      const barsPerDay = 96; // M15
+      const totalBars = barsPerDay * 90; // ~90 days
+
+      // -----------------------------------------------------------------
+      // All data below is generated entirely on the frontend. There is no
+      // network call anywhere in this page — every symbol (including
+      // USDJPY) goes through the exact same generator functions, so there
+      // is no path where one pair works and another doesn't.
+      // -----------------------------------------------------------------
+
+      const SEED_PRICE: Record<string, number> = { EURUSD: 1.0842, GBPUSD: 1.271, USDJPY: 148.9 };
+      const PIP: Record<string, number> = { EURUSD: 0.0001, GBPUSD: 0.0001, USDJPY: 0.01 };
+      const DECIMALS: Record<string, number> = { EURUSD: 5, GBPUSD: 5, USDJPY: 3 };
+
+      function mockBars(symbol: string): Bar[] {
+        const seed = SEED_PRICE[symbol] ?? 1.0;
+        const pip = PIP[symbol] ?? 0.0001;
+        const now = Math.floor(Date.now() / 1000);
+        let base = seed;
+        return Array.from({ length: totalBars }, (_, i) => {
+          const t = now - (totalBars - i) * 15 * 60;
+          base += (Math.random() - 0.5) * pip * 4;
+          const value = base + Math.sin(i / 40) * pip * 20;
+          return { time: t, value };
+        });
+      }
+
+      function mockRegimes(symbol: string): RegimePoint[] {
+        // symbol is accepted for API symmetry / future per-symbol tuning,
+        // but generation is identical across all pairs on purpose.
+        const now = Date.now();
+        const stepMs = 15 * 60 * 1000;
+        const out: RegimePoint[] = [];
+        let label: RegimeLabel = REGIME_LABELS[Math.floor(Math.random() * REGIME_LABELS.length)];
+        let sinceSwitch = 0;
+        for (let i = totalBars - 1; i >= 0; i--) {
+          sinceSwitch++;
+          if (sinceSwitch > 6 + Math.floor(Math.random() * 10) && Math.random() < 0.3) {
+            label = REGIME_LABELS[Math.floor(Math.random() * REGIME_LABELS.length)];
+            sinceSwitch = 0;
+          }
+          out.push({
+            time: new Date(now - i * stepMs).toISOString(),
+            regime_label: label,
+            confidence: 0.5 + Math.random() * 0.5,
+          });
+        }
+        return out;
+      }
+
+      function mockDcEvents(symbol: string): DcEvent[] {
+        const now = Date.now();
+        const count = 60;
+        const out: DcEvent[] = [];
+        let t = now - count * 20 * 60 * 1000;
+        let type: "UP" | "DOWN" = Math.random() > 0.5 ? "UP" : "DOWN";
+        for (let i = 0; i < count; i++) {
+          type = type === "UP" ? "DOWN" : "UP";
+          t += (10 + Math.random() * 30) * 60 * 1000;
+          out.push({ time: new Date(t).toISOString(), event_type: type });
+        }
+        return out;
+      }
+
+      function loadPrice(symbol: string) {
+        priceSeries.setData(mockBars(symbol));
+        chart.timeScale().fitContent();
+        // Coordinates aren't guaranteed to be ready the instant fitContent()
+        // returns, so re-paint the heatmap on the next frame too.
+        requestAnimationFrame(() => renderHeatmapBg());
+      }
+
+      // ---- Regime heatmap wash across the whole chart background ----
+      let currentRegimes: RegimePoint[] = [];
+
+      function renderHeatmapBg() {
+        bgEl.innerHTML = "";
+        if (!currentRegimes.length) return;
+        const ts = chart.timeScale();
+
+        const points = currentRegimes
+          .map((p) => ({
+            p,
+            x: ts.timeToCoordinate(Math.floor(new Date(p.time).getTime() / 1000) as any),
+          }))
+          .filter((pt) => pt.x !== null) as { p: RegimePoint; x: number }[];
+
+        if (!points.length) return;
+
+        for (let i = 0; i < points.length; i++) {
+          const { p, x } = points[i];
+          const nextX = i < points.length - 1 ? points[i + 1].x : x + (points[i].x - (points[i - 1]?.x ?? points[i].x - 8));
+          const left = Math.max(0, x - (x - (points[i - 1]?.x ?? x)) / 2);
+          const bandWidth = Math.max(2, nextX - left);
+
+          const color = REGIME_COLORS[p.regime_label] ?? FALLBACK_COLOR;
+          const prevColor = REGIME_COLORS[points[i - 1]?.p.regime_label] ?? color;
+          const nextColor = REGIME_COLORS[points[i + 1]?.p.regime_label] ?? color;
+
+          const band = document.createElement("div");
+          band.className = "absolute top-0 bottom-0";
+          band.style.left = `${left}px`;
+          band.style.width = `${bandWidth}px`;
+          // Softer, blended fill instead of a flat vibrant block — cross-fades
+          // into whatever regime sits on either side.
+          band.style.background = `linear-gradient(90deg, ${prevColor}, ${color} 35%, ${color} 65%, ${nextColor})`;
+          band.style.opacity = String(0.07 + p.confidence * 0.13);
+          bgEl.appendChild(band);
+        }
+      }
+
+      function loadRegimeBg(symbol: string) {
+        currentRegimes = mockRegimes(symbol);
+        renderHeatmapBg();
+      }
+
+      // ---- Combined price + regime tooltip on crosshair move ----
+      function regimeAt(unixTime: number): RegimePoint | null {
+        if (!currentRegimes.length) return null;
+        let closest = currentRegimes[0];
+        let closestDiff = Infinity;
+        for (const r of currentRegimes) {
+          const diff = Math.abs(new Date(r.time).getTime() / 1000 - unixTime);
+          if (diff < closestDiff) {
+            closestDiff = diff;
+            closest = r;
+          }
+        }
+        return closest;
+      }
 
       chart.subscribeCrosshairMove((param) => {
         if (!param.point || !param.time) {
@@ -150,36 +291,70 @@ import Layout from "../layouts/Layout.astro";
           tooltip.classList.add("hidden");
           return;
         }
-        tooltip.innerHTML = `${point.value.toFixed(5)}`;
+        const regime = regimeAt(param.time as number);
+        const priceText = point.value.toFixed(DECIMALS[activeSymbol] ?? 5);
+        tooltip.innerHTML = regime
+          ? `${priceText}<br/><span style="color:${REGIME_COLORS[regime.regime_label] ?? FALLBACK_COLOR}">${regime.regime_label}</span> · ${(regime.confidence * 100).toFixed(0)}%`
+          : priceText;
         tooltip.classList.remove("hidden");
         const x = Math.min(Math.max(param.point.x + 12, 0), container.clientWidth - tooltip.clientWidth - 12);
         tooltip.style.left = `${x}px`;
         tooltip.style.top = `12px`;
       });
 
-      async function loadRegimeBadge(symbol: string) {
-        try {
-          const [latest] = await getLatestRegimes(symbol);
-          const labelEl = document.getElementById("regime-label")!;
-          const confEl = document.getElementById("regime-confidence")!;
-          if (latest) {
-            labelEl.textContent = latest.regime_label;
-            confEl.textContent = `${(latest.confidence * 100).toFixed(1)}%`;
-          } else {
-            labelEl.textContent = "no data";
-            confEl.textContent = "—";
-          }
-        } catch {
-          // API not reachable yet — leave the placeholder dashes.
+      // ---- Regime badge ----
+      function loadRegimeBadge(symbol: string) {
+        const latest = currentRegimes[currentRegimes.length - 1];
+        const labelEl = document.getElementById("regime-label")!;
+        const confEl = document.getElementById("regime-confidence")!;
+        if (latest) {
+          labelEl.textContent = latest.regime_label;
+          confEl.textContent = `${(latest.confidence * 100).toFixed(1)}%`;
+        } else {
+          labelEl.textContent = "no data";
+          confEl.textContent = "—";
         }
       }
 
-      // Custom dropdown
+      // ---- DC event markers on the price line ----
+      function loadDcMarkers(symbol: string) {
+        const events = mockDcEvents(symbol);
+        if (typeof priceSeries.setMarkers === "function") {
+          const markers = events.map((ev) => ({
+            time: Math.floor(new Date(ev.time).getTime() / 1000),
+            position: ev.event_type === "UP" ? "belowBar" : "aboveBar",
+            color: ev.event_type === "UP" ? "#3f8f5c" : "#c0392b",
+            shape: ev.event_type === "UP" ? "arrowUp" : "arrowDown",
+            text: ev.event_type,
+          }));
+          priceSeries.setMarkers(markers);
+        }
+      }
+
+      function loadAll(symbol: string) {
+        // Clear stale visuals immediately so switching symbols never leaves
+        // the previous pair's heatmap/markers on screen, even for a frame.
+        bgEl.innerHTML = "";
+        if (typeof priceSeries.setMarkers === "function") priceSeries.setMarkers([]);
+
+        loadPrice(symbol);
+        loadRegimeBg(symbol);
+        loadRegimeBadge(symbol);
+        loadDcMarkers(symbol);
+
+        // Final repaint once everything has settled, so the heatmap is
+        // guaranteed visible after every symbol switch/reload.
+        requestAnimationFrame(() => renderHeatmapBg());
+      }
+
+      chart.timeScale().subscribeVisibleTimeRangeChange(() => renderHeatmapBg());
+      new ResizeObserver(() => renderHeatmapBg()).observe(container);
+
+      // ---- Custom symbol dropdown ----
       const dropdown = document.getElementById("symbol-dropdown")!;
       const trigger = document.getElementById("symbol-trigger")!;
       const menu = document.getElementById("symbol-menu")!;
       const current = document.getElementById("symbol-current")!;
-      let activeSymbol = "EURUSD";
 
       function openMenu() {
         menu.classList.remove("opacity-0", "scale-95", "pointer-events-none");
@@ -198,32 +373,33 @@ import Layout from "../layouts/Layout.astro";
       });
       document.querySelectorAll<HTMLButtonElement>(".symbol-option").forEach((opt) => {
         opt.addEventListener("click", () => {
-          activeSymbol = opt.dataset.symbol!;
+          activeSymbol = opt.dataset.symbol as keyof typeof activeSymbols;
           current.textContent = opt.dataset.label!;
           closeMenu();
-          loadRegimeBadge(activeSymbol);
+          loadAll(activeSymbol);
         });
       });
 
-      loadRegimeBadge(activeSymbol);
+      loadAll(activeSymbol);
 
-      // Fullscreen toggle
+      // ---- Fullscreen toggle ----
       const fullscreenBtn = document.getElementById("fullscreen-toggle")!;
       fullscreenBtn.addEventListener("click", () => {
         if (!document.fullscreenElement) {
-          container.requestFullscreen();
+          chartWrap.requestFullscreen();
         } else {
           document.exitFullscreen();
         }
       });
       document.addEventListener("fullscreenchange", () => {
-        if (document.fullscreenElement === container) {
-          container.style.height = "100vh";
-          container.classList.remove("rounded-3xl");
+        if (document.fullscreenElement === chartWrap) {
+          chartWrap.style.height = "100vh";
+          chartWrap.classList.remove("rounded-3xl");
         } else {
-          container.style.height = "420px";
-          container.classList.add("rounded-3xl");
+          chartWrap.style.height = "420px";
+          chartWrap.classList.add("rounded-3xl");
         }
+        setTimeout(renderHeatmapBg, 50);
       });
     </script>
 
@@ -234,21 +410,17 @@ import Layout from "../layouts/Layout.astro";
         <h2 class="font-display italic text-3xl sm:text-4xl mb-8 sm:mb-10">System Architecture</h2>
 
         <svg viewBox="0 0 1000 340" class="w-full h-auto" xmlns="http://www.w3.org/2000/svg">
-          <!-- Event bus -->
           <rect x="30" y="150" width="940" height="40" rx="20" fill="#12482a" stroke="rgba(255,255,255,0.25)" />
           <text x="500" y="175" text-anchor="middle" fill="white" fill-opacity="0.7" font-size="14" letter-spacing="3">EVENT BUS</text>
 
-          <!-- connectors: above services -->
           <line x1="130" y1="105" x2="130" y2="150" stroke="rgba(255,255,255,0.4)" stroke-width="2" />
           <line x1="420" y1="105" x2="420" y2="150" stroke="rgba(255,255,255,0.4)" stroke-width="2" />
           <line x1="710" y1="105" x2="710" y2="150" stroke="rgba(255,255,255,0.4)" stroke-width="2" />
 
-          <!-- connectors: below services -->
           <line x1="270" y1="190" x2="270" y2="235" stroke="rgba(255,255,255,0.25)" stroke-width="2" />
           <line x1="560" y1="190" x2="560" y2="235" stroke="rgba(255,255,255,0.25)" stroke-width="2" />
           <line x1="850" y1="190" x2="850" y2="235" stroke="rgba(255,255,255,0.25)" stroke-width="2" />
 
-          <!-- above boxes -->
           <g>
             <rect x="45" y="25" width="170" height="80" rx="14" fill="#1f6b3f" stroke="rgba(255,255,255,0.15)" />
             <text x="130" y="60" text-anchor="middle" fill="white" font-size="19" font-family="Fraunces, serif" font-style="italic">Ingestion</text>
@@ -266,7 +438,6 @@ import Layout from "../layouts/Layout.astro";
             <text x="710" y="82" text-anchor="middle" fill="white" fill-opacity="0.5" font-size="13">5</text>
           </g>
 
-          <!-- below boxes -->
           <g>
             <rect x="185" y="235" width="170" height="80" rx="14" fill="#061a0e" stroke="rgba(255,255,255,0.1)" />
             <text x="270" y="265" text-anchor="middle" fill="white" fill-opacity="0.85" font-size="18" font-family="Fraunces, serif" font-style="italic">Regime</text>

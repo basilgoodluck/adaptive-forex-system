@@ -2,8 +2,9 @@ import os
 import json
 import itertools
 import numpy as np
-from datetime import datetime
 from dotenv import load_dotenv
+
+from datetime import datetime, timezone
 
 import db
 import dc_scanner
@@ -16,10 +17,10 @@ DSN = os.getenv("DATABASE_URL")
 SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY"]
 TIMEFRAME = "M15"
 
-TRAIN_START = datetime(2020, 1, 1)
-TRAIN_END = datetime(2022, 12, 31)
-VAL_START = datetime(2023, 1, 1)
-VAL_END = datetime(2023, 12, 31)
+TRAIN_START = datetime(2020, 1, 1, tzinfo=timezone.utc)
+TRAIN_END = datetime(2022, 12, 31, tzinfo=timezone.utc)
+VAL_START = datetime(2023, 1, 1, tzinfo=timezone.utc)
+VAL_END = datetime(2023, 12, 31, tzinfo=timezone.utc)
 
 THETA_GRID = [0.0005, 0.001, 0.002, 0.005]
 WINDOW_GRID = [10, 20, 40]
