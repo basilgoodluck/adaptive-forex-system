@@ -1,0 +1,6 @@
+psycopg[binary]==3.2.1
+pydantic==2.8.2
+python-dotenv==1.0.1
+pandas>=2.2
+hmmlearn==0.3.2
+TA-Lib==0.4.28

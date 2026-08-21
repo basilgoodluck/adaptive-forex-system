@@ -1,0 +1,72 @@
+# Environment
+.env
+.env.*
+!.env.example
+!.env.sample
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.sample
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Node / Astro
+**/node_modules/
+**/.astro/
+**/dist/
+.npm/
+.pnpm-store/
+*.tsbuildinfo
+
+# Secrets / credentials
+**/*secret*
+**/*secrets*
+**/*credential*
+**/*credentials*
+**/*private-key*
+**/*private_key*
+**/*service-account*
+**/*service_account*
+
+# Key / certificate files
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+
+# Logs
+**/*.log
+**/logs/
+
+# Caches / temporary files
+**/.cache/
+**/.tmp/
+**/tmp/
+**/temp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini

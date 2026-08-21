@@ -1,0 +1,376 @@
+---
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout>
+  <main class="bg-[#0b2e18] text-white">
+
+    <!-- Hero -->
+    <section class="grid place-items-center px-6 pt-24 pb-6 sm:pt-32 sm:pb-8 text-center">
+      <h1 class="font-display italic text-3xl sm:text-5xl md:text-6xl max-w-2xl leading-tight">
+        <span class="typewriter-line type-1">Markets shift.</span>
+        <span class="typewriter-line type-2">So does this system.</span>
+      </h1>
+    </section>
+
+    <!-- Live Chart -->
+    <section class="site-section px-4 sm:px-6 pt-6 pb-16 sm:pb-24">
+      <div class="mx-auto max-w-5xl">
+        <div class="flex flex-wrap items-center justify-between gap-4 mb-4">
+          <div class="flex items-center gap-2">
+            <div class="relative" id="symbol-dropdown">
+              <button
+                id="symbol-trigger"
+                type="button"
+                class="w-36 flex items-center justify-between rounded-lg px-3 py-2 text-sm text-white bg-[#12482a] hover:bg-[#1f6b3f] transition-colors duration-200"
+              >
+                <span id="symbol-current">EUR/USD</span>
+                <svg width="10" height="10" viewBox="0 0 10 10" class="text-white/70">
+                  <path d="M1 3 L5 7 L9 3" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <div
+                id="symbol-menu"
+                class="absolute left-0 mt-1 w-36 rounded-lg bg-[#12482a] overflow-hidden opacity-0 scale-95 pointer-events-none transition-all duration-150 origin-top z-20"
+              >
+                <button data-symbol="EURUSD" data-label="EUR/USD" class="symbol-option block w-full text-left px-3 py-2 text-sm text-white hover:bg-[#1f6b3f] transition-colors duration-150">EUR/USD</button>
+                <button data-symbol="GBPUSD" data-label="GBP/USD" class="symbol-option block w-full text-left px-3 py-2 text-sm text-white hover:bg-[#1f6b3f] transition-colors duration-150">GBP/USD</button>
+                <button data-symbol="USDJPY" data-label="USD/JPY" class="symbol-option block w-full text-left px-3 py-2 text-sm text-white hover:bg-[#1f6b3f] transition-colors duration-150">USD/JPY</button>
+              </div>
+            </div>
+            <div class="rounded-lg px-3 py-2 text-xs text-white bg-[#12482a]">M15</div>
+          </div>
+          <div class="flex items-center gap-2">
+            <div id="regime-badge" class="rounded-lg px-4 py-2 text-sm text-white/70 bg-[#12482a]">
+              Regime: <span id="regime-label" class="text-white">—</span>
+              <span class="text-white/40 mx-2">|</span>
+              Confidence: <span id="regime-confidence" class="text-white">—</span>
+            </div>
+            <button
+              id="fullscreen-toggle"
+              type="button"
+              class="rounded-lg p-2 text-white bg-[#12482a] hover:bg-[#1f6b3f] transition-colors duration-200"
+              aria-label="Toggle fullscreen"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M1 5V1H5M11 1H15V5M15 11V15H11M5 15H1V11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="relative">
+          <div id="price-chart" class="card-deep rounded-3xl overflow-hidden w-full" style="height: 420px;"></div>
+          <div
+            id="chart-tooltip"
+            class="hidden absolute z-10 pointer-events-none rounded-lg bg-[#12482a] px-3 py-2 text-xs text-white shadow-lg"
+          ></div>
+        </div>
+      </div>
+    </section>
+
+    <script>
+      import { createChart, ColorType } from "lightweight-charts";
+      import { getLatestRegimes } from "../lib/api";
+
+      const container = document.getElementById("price-chart")!;
+      const tooltip = document.getElementById("chart-tooltip")!;
+
+      const chart = createChart(container, {
+        layout: {
+          background: { type: ColorType.Solid, color: "transparent" },
+          textColor: "rgba(255,255,255,0.6)",
+        },
+        grid: {
+          vertLines: { color: "rgba(255,255,255,0.06)" },
+          horzLines: { color: "rgba(255,255,255,0.06)" },
+        },
+        crosshair: {
+          vertLine: {
+            visible: true,
+            labelVisible: true,
+            color: "rgba(232,193,90,0.4)",
+            width: 1,
+            style: 0,
+          },
+          horzLine: { visible: false, labelVisible: false },
+        },
+        timeScale: {
+          borderVisible: false,
+          timeVisible: true,
+          secondsVisible: false,
+        },
+        rightPriceScale: {
+          borderVisible: false,
+          visible: true,
+          textColor: "rgba(255,255,255,0.85)",
+          scaleMargins: { top: 0.15, bottom: 0.15 },
+        },
+        autoSize: true,
+      });
+
+      const seriesOptions = {
+        color: "#e8c15a",
+        lineWidth: 2,
+        crosshairMarkerVisible: false,
+        priceLineVisible: false,
+      };
+
+      let priceSeries: any;
+      if (typeof (chart as any).addLineSeries === "function") {
+        // lightweight-charts v3/v4 API
+        priceSeries = (chart as any).addLineSeries(seriesOptions);
+      } else {
+        // lightweight-charts v5 API
+        const { LineSeries } = await import("lightweight-charts");
+        priceSeries = (chart as any).addSeries(LineSeries, seriesOptions);
+      }
+
+      container.style.cursor = "crosshair";
+
+      // TODO: swap for real bars from the API once /bars exists.
+      const now = Math.floor(Date.now() / 1000);
+      let base = 1.085;
+      const barsPerDay = 96; // M15 = 96 bars/day, matches the M15 badge
+      const placeholder = Array.from({ length: barsPerDay * 5 }, (_, i) => {
+        const t = now - (barsPerDay * 5 - i) * 15 * 60;
+        base += (Math.random() - 0.5) * 0.0004;
+        const value = base + Math.sin(i / 40) * 0.002;
+        return { time: t, value };
+      });
+      priceSeries.setData(placeholder);
+
+      chart.subscribeCrosshairMove((param) => {
+        if (!param.point || !param.time) {
+          tooltip.classList.add("hidden");
+          return;
+        }
+        const point = param.seriesData.get(priceSeries) as any;
+        if (!point) {
+          tooltip.classList.add("hidden");
+          return;
+        }
+        tooltip.innerHTML = `${point.value.toFixed(5)}`;
+        tooltip.classList.remove("hidden");
+        const x = Math.min(Math.max(param.point.x + 12, 0), container.clientWidth - tooltip.clientWidth - 12);
+        tooltip.style.left = `${x}px`;
+        tooltip.style.top = `12px`;
+      });
+
+      async function loadRegimeBadge(symbol: string) {
+        try {
+          const [latest] = await getLatestRegimes(symbol);
+          const labelEl = document.getElementById("regime-label")!;
+          const confEl = document.getElementById("regime-confidence")!;
+          if (latest) {
+            labelEl.textContent = latest.regime_label;
+            confEl.textContent = `${(latest.confidence * 100).toFixed(1)}%`;
+          } else {
+            labelEl.textContent = "no data";
+            confEl.textContent = "—";
+          }
+        } catch {
+          // API not reachable yet — leave the placeholder dashes.
+        }
+      }
+
+      // Custom dropdown
+      const dropdown = document.getElementById("symbol-dropdown")!;
+      const trigger = document.getElementById("symbol-trigger")!;
+      const menu = document.getElementById("symbol-menu")!;
+      const current = document.getElementById("symbol-current")!;
+      let activeSymbol = "EURUSD";
+
+      function openMenu() {
+        menu.classList.remove("opacity-0", "scale-95", "pointer-events-none");
+        menu.classList.add("opacity-100", "scale-100");
+      }
+      function closeMenu() {
+        menu.classList.add("opacity-0", "scale-95", "pointer-events-none");
+        menu.classList.remove("opacity-100", "scale-100");
+      }
+
+      trigger.addEventListener("click", () => {
+        menu.classList.contains("opacity-100") ? closeMenu() : openMenu();
+      });
+      document.addEventListener("click", (e) => {
+        if (!dropdown.contains(e.target as Node)) closeMenu();
+      });
+      document.querySelectorAll<HTMLButtonElement>(".symbol-option").forEach((opt) => {
+        opt.addEventListener("click", () => {
+          activeSymbol = opt.dataset.symbol!;
+          current.textContent = opt.dataset.label!;
+          closeMenu();
+          loadRegimeBadge(activeSymbol);
+        });
+      });
+
+      loadRegimeBadge(activeSymbol);
+
+      // Fullscreen toggle
+      const fullscreenBtn = document.getElementById("fullscreen-toggle")!;
+      fullscreenBtn.addEventListener("click", () => {
+        if (!document.fullscreenElement) {
+          container.requestFullscreen();
+        } else {
+          document.exitFullscreen();
+        }
+      });
+      document.addEventListener("fullscreenchange", () => {
+        if (document.fullscreenElement === container) {
+          container.style.height = "100vh";
+          container.classList.remove("rounded-3xl");
+        } else {
+          container.style.height = "420px";
+          container.classList.add("rounded-3xl");
+        }
+      });
+    </script>
+
+
+    <!-- System Architecture -->
+    <section class="site-section px-4 sm:px-6 py-16 sm:py-24">
+      <div class="mx-auto max-w-5xl">
+        <h2 class="font-display italic text-3xl sm:text-4xl mb-8 sm:mb-10">System Architecture</h2>
+
+        <svg viewBox="0 0 1000 340" class="w-full h-auto" xmlns="http://www.w3.org/2000/svg">
+          <!-- Event bus -->
+          <rect x="30" y="150" width="940" height="40" rx="20" fill="#12482a" stroke="rgba(255,255,255,0.25)" />
+          <text x="500" y="175" text-anchor="middle" fill="white" fill-opacity="0.7" font-size="14" letter-spacing="3">EVENT BUS</text>
+
+          <!-- connectors: above services -->
+          <line x1="130" y1="105" x2="130" y2="150" stroke="rgba(255,255,255,0.4)" stroke-width="2" />
+          <line x1="420" y1="105" x2="420" y2="150" stroke="rgba(255,255,255,0.4)" stroke-width="2" />
+          <line x1="710" y1="105" x2="710" y2="150" stroke="rgba(255,255,255,0.4)" stroke-width="2" />
+
+          <!-- connectors: below services -->
+          <line x1="270" y1="190" x2="270" y2="235" stroke="rgba(255,255,255,0.25)" stroke-width="2" />
+          <line x1="560" y1="190" x2="560" y2="235" stroke="rgba(255,255,255,0.25)" stroke-width="2" />
+          <line x1="850" y1="190" x2="850" y2="235" stroke="rgba(255,255,255,0.25)" stroke-width="2" />
+
+          <!-- above boxes -->
+          <g>
+            <rect x="45" y="25" width="170" height="80" rx="14" fill="#1f6b3f" stroke="rgba(255,255,255,0.15)" />
+            <text x="130" y="60" text-anchor="middle" fill="white" font-size="19" font-family="Fraunces, serif" font-style="italic">Ingestion</text>
+            <text x="130" y="82" text-anchor="middle" fill="white" fill-opacity="0.5" font-size="13">1</text>
+          </g>
+          <g>
+            <rect x="335" y="25" width="170" height="80" rx="14" fill="#1f6b3f" stroke="rgba(255,255,255,0.15)" />
+            <text x="420" y="55" text-anchor="middle" fill="white" font-size="18" font-family="Fraunces, serif" font-style="italic">Strategy</text>
+            <text x="420" y="76" text-anchor="middle" fill="white" font-size="18" font-family="Fraunces, serif" font-style="italic">Selector</text>
+            <text x="420" y="94" text-anchor="middle" fill="white" fill-opacity="0.5" font-size="13">3</text>
+          </g>
+          <g>
+            <rect x="625" y="25" width="170" height="80" rx="14" fill="#1f6b3f" stroke="rgba(255,255,255,0.15)" />
+            <text x="710" y="60" text-anchor="middle" fill="white" font-size="19" font-family="Fraunces, serif" font-style="italic">Execution</text>
+            <text x="710" y="82" text-anchor="middle" fill="white" fill-opacity="0.5" font-size="13">5</text>
+          </g>
+
+          <!-- below boxes -->
+          <g>
+            <rect x="185" y="235" width="170" height="80" rx="14" fill="#061a0e" stroke="rgba(255,255,255,0.1)" />
+            <text x="270" y="265" text-anchor="middle" fill="white" fill-opacity="0.85" font-size="18" font-family="Fraunces, serif" font-style="italic">Regime</text>
+            <text x="270" y="286" text-anchor="middle" fill="white" fill-opacity="0.85" font-size="18" font-family="Fraunces, serif" font-style="italic">Detector</text>
+            <text x="270" y="304" text-anchor="middle" fill="white" fill-opacity="0.4" font-size="13">2</text>
+          </g>
+          <g>
+            <rect x="475" y="235" width="170" height="80" rx="14" fill="#061a0e" stroke="rgba(255,255,255,0.1)" />
+            <text x="560" y="265" text-anchor="middle" fill="white" fill-opacity="0.85" font-size="18" font-family="Fraunces, serif" font-style="italic">Risk</text>
+            <text x="560" y="286" text-anchor="middle" fill="white" fill-opacity="0.85" font-size="18" font-family="Fraunces, serif" font-style="italic">Manager</text>
+            <text x="560" y="304" text-anchor="middle" fill="white" fill-opacity="0.4" font-size="13">4</text>
+          </g>
+          <g>
+            <rect x="765" y="235" width="170" height="80" rx="14" fill="#061a0e" stroke="rgba(255,255,255,0.1)" />
+            <text x="850" y="270" text-anchor="middle" fill="white" fill-opacity="0.85" font-size="19" font-family="Fraunces, serif" font-style="italic">Logger</text>
+            <text x="850" y="294" text-anchor="middle" fill="white" fill-opacity="0.4" font-size="13">6</text>
+          </g>
+        </svg>
+      </div>
+    </section>
+
+    <!-- Training Data -->
+    <section class="site-section px-4 sm:px-6 py-16 sm:py-24">
+      <div class="mx-auto max-w-5xl">
+        <h2 class="font-display italic text-3xl sm:text-4xl mb-8 sm:mb-10">Training Data</h2>
+        <div class="card-deep rounded-3xl overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse font-mono text-xs sm:text-sm">
+              <thead>
+                <tr class="border-b border-white/10">
+                  <th class="px-5 py-3 text-white/50 font-normal whitespace-nowrap">timestamp</th>
+                  <th class="px-5 py-3 text-white/50 font-normal whitespace-nowrap">symbol</th>
+                  <th class="px-5 py-3 text-white/50 font-normal whitespace-nowrap">price</th>
+                  <th class="px-5 py-3 text-white/50 font-normal whitespace-nowrap">dc_event</th>
+                  <th class="px-5 py-3 text-white/50 font-normal whitespace-nowrap">magnitude</th>
+                  <th class="px-5 py-3 text-white/50 font-normal whitespace-nowrap">regime</th>
+                </tr>
+              </thead>
+              <tbody class="text-white/80">
+                <tr class="border-b border-white/10">
+                  <td class="px-5 py-3 whitespace-nowrap">2024-03-11T09:15:00Z</td>
+                  <td class="px-5 py-3 whitespace-nowrap">EURUSD</td>
+                  <td class="px-5 py-3 whitespace-nowrap">1.08421</td>
+                  <td class="px-5 py-3 whitespace-nowrap">UP</td>
+                  <td class="px-5 py-3 whitespace-nowrap">0.0021</td>
+                  <td class="px-5 py-3 whitespace-nowrap">trend</td>
+                </tr>
+                <tr class="border-b border-white/10">
+                  <td class="px-5 py-3 whitespace-nowrap">2024-03-11T09:30:00Z</td>
+                  <td class="px-5 py-3 whitespace-nowrap">EURUSD</td>
+                  <td class="px-5 py-3 whitespace-nowrap">1.08497</td>
+                  <td class="px-5 py-3 whitespace-nowrap">UP</td>
+                  <td class="px-5 py-3 whitespace-nowrap">0.0018</td>
+                  <td class="px-5 py-3 whitespace-nowrap">trend</td>
+                </tr>
+                <tr class="border-b border-white/10">
+                  <td class="px-5 py-3 whitespace-nowrap">2024-03-11T09:45:00Z</td>
+                  <td class="px-5 py-3 whitespace-nowrap">EURUSD</td>
+                  <td class="px-5 py-3 whitespace-nowrap">1.08402</td>
+                  <td class="px-5 py-3 whitespace-nowrap">DOWN</td>
+                  <td class="px-5 py-3 whitespace-nowrap">0.0027</td>
+                  <td class="px-5 py-3 whitespace-nowrap">reversal</td>
+                </tr>
+                <tr class="border-b border-white/10">
+                  <td class="px-5 py-3 whitespace-nowrap">2024-03-11T10:00:00Z</td>
+                  <td class="px-5 py-3 whitespace-nowrap">GBPUSD</td>
+                  <td class="px-5 py-3 whitespace-nowrap">1.27310</td>
+                  <td class="px-5 py-3 whitespace-nowrap">DOWN</td>
+                  <td class="px-5 py-3 whitespace-nowrap">0.0033</td>
+                  <td class="px-5 py-3 whitespace-nowrap">reversal</td>
+                </tr>
+                <tr class="border-b border-white/10">
+                  <td class="px-5 py-3 whitespace-nowrap">2024-03-11T10:15:00Z</td>
+                  <td class="px-5 py-3 whitespace-nowrap">GBPUSD</td>
+                  <td class="px-5 py-3 whitespace-nowrap">1.27186</td>
+                  <td class="px-5 py-3 whitespace-nowrap">DOWN</td>
+                  <td class="px-5 py-3 whitespace-nowrap">0.0012</td>
+                  <td class="px-5 py-3 whitespace-nowrap">range</td>
+                </tr>
+                <tr>
+                  <td class="px-5 py-3 whitespace-nowrap">2024-03-11T10:30:00Z</td>
+                  <td class="px-5 py-3 whitespace-nowrap">USDJPY</td>
+                  <td class="px-5 py-3 whitespace-nowrap">148.902</td>
+                  <td class="px-5 py-3 whitespace-nowrap">UP</td>
+                  <td class="px-5 py-3 whitespace-nowrap">0.0009</td>
+                  <td class="px-5 py-3 whitespace-nowrap">range</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tech Stack -->
+    <section class="site-section px-4 sm:px-6 py-16 sm:py-24">
+      <div class="mx-auto max-w-5xl flex flex-wrap gap-3 text-sm sm:text-base">
+        <span class="card-bulge rounded-full px-5 py-2.5 text-white/95">Python</span>
+        <span class="card-bulge rounded-full px-5 py-2.5 text-white/95">HMM</span>
+        <span class="card-bulge rounded-full px-5 py-2.5 text-white/95">Directional Change</span>
+        <span class="card-bulge rounded-full px-5 py-2.5 text-white/95">Pandas / NumPy</span>
+        <span class="card-bulge rounded-full px-5 py-2.5 text-white/95">Astro + Tailwind</span>
+      </div>
+    </section>
+
+  </main>
+</Layout>
